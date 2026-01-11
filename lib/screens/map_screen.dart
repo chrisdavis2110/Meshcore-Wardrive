@@ -19,6 +19,7 @@ import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
 import 'debug_log_screen.dart';
+import 'debug_diagnostics_screen.dart';
 import '../main.dart';
 
 class MapScreen extends StatefulWidget {
@@ -29,7 +30,7 @@ class MapScreen extends StatefulWidget {
 }
 
 class _MapScreenState extends State<MapScreen> {
-  static const String appVersion = '1.0.7';
+  static const String appVersion = '1.0.10';
   
   final LocationService _locationService = LocationService();
   final MapController _mapController = MapController();
@@ -1137,6 +1138,24 @@ class _MapScreenState extends State<MapScreen> {
             const Padding(
               padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               child: Text(
+                'Debug',
+                style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
+              ),
+            ),
+            ListTile(
+              title: const Text('Debug Diagnostics'),
+              subtitle: const Text('View debug logs for troubleshooting'),
+              leading: const Icon(Icons.bug_report),
+              trailing: const Icon(Icons.arrow_forward),
+              onTap: () {
+                Navigator.pop(context);
+                _openDebugDiagnostics();
+              },
+            ),
+            const Divider(),
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: Text(
                 'Online Map',
                 style: TextStyle(fontWeight: FontWeight.bold, fontSize: 14),
               ),
@@ -1264,6 +1283,17 @@ class _MapScreenState extends State<MapScreen> {
       _showSnackBar('Found ${repeaters.length} repeater(s)');
       _showRepeatersDialog();
     }
+  }
+  
+  void _openDebugDiagnostics() {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (context) => DebugDiagnosticsScreen(
+          locationService: _locationService,
+        ),
+      ),
+    );
   }
   
   String _getThemeModeText() {

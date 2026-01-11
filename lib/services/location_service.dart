@@ -8,10 +8,12 @@ import '../models/models.dart';
 import '../utils/geohash_utils.dart';
 import 'database_service.dart';
 import 'lora_companion_service.dart';
+import 'persistent_debug_logger.dart';
 
 class LocationService {
   final DatabaseService _dbService = DatabaseService();
   final LoRaCompanionService _loraCompanion = LoRaCompanionService();
+  final PersistentDebugLogger _logger = PersistentDebugLogger();
   StreamSubscription<Position>? _positionStreamSubscription;
   bool _isTracking = false;
   bool _autoPingEnabled = false;
@@ -33,14 +35,18 @@ class LocationService {
   /// Check if location permissions are granted
   Future<bool> checkPermissions() async {
     LocationPermission permission = await Geolocator.checkPermission();
+    await _logger.logPermission('Location', permission.toString());
+    
     if (permission == LocationPermission.denied) {
       permission = await Geolocator.requestPermission();
+      await _logger.logPermission('Location (after request)', permission.toString());
       if (permission == LocationPermission.denied) {
         return false;
       }
     }
 
     if (permission == LocationPermission.deniedForever) {
+      await _logger.logPermission('Location', 'DENIED_FOREVER');
       return false;
     }
 
@@ -101,16 +107,29 @@ class LocationService {
 
   /// Start tracking location
   Future<bool> startTracking() async {
-    if (_isTracking) return true;
+    await _logger.init();
+    await _logger.logServiceEvent('startTracking() called');
+    
+    if (_isTracking) {
+      await _logger.logServiceEvent('Already tracking - returning early');
+      return true;
+    }
 
     final hasPermission = await checkPermissions();
-    if (!hasPermission) return false;
+    if (!hasPermission) {
+      await _logger.logError('Permissions', 'Location permission not granted');
+      return false;
+    }
 
     final isEnabled = await isLocationServiceEnabled();
-    if (!isEnabled) return false;
+    if (!isEnabled) {
+      await _logger.logError('Location Service', 'GPS is disabled');
+      return false;
+    }
 
     // Request notification permission for Android 13+
     final notificationStatus = await Permission.notification.request();
+    await _logger.logPermission('Notification', notificationStatus.toString());
     if (!notificationStatus.isGranted) {
       print('Notification permission denied - foreground service may not work properly');
     }
@@ -118,6 +137,7 @@ class LocationService {
     try {
       // Initialize and start foreground service
       _initForegroundTask();
+      await _logger.logServiceEvent('Foreground task initialized');
       
       await FlutterForegroundTask.startService(
         serviceId: 256,
@@ -129,6 +149,7 @@ class LocationService {
         callback: null, // We handle location in Flutter, not in service callback
       );
       
+      await _logger.logServiceEvent('Foreground service started successfully');
       print('Foreground service started');
       
       const LocationSettings locationSettings = LocationSettings(
@@ -143,17 +164,23 @@ class LocationService {
           _handleNewPosition(position);
         },
         onError: (error) {
+          _logger.logError('Location Stream', error.toString());
           print('Location stream error: $error');
         },
       );
 
+      await _logger.logLocationEvent('Position stream started with 5m distance filter');
+
       // Enable wakelock to prevent screen from sleeping and stopping tracking
       await WakelockPlus.enable();
+      await _logger.logPowerEvent('Wakelock enabled');
       print('Wakelock enabled - app will stay active during tracking');
 
       _isTracking = true;
+      await _logger.logServiceEvent('Tracking started successfully');
       return true;
     } catch (e) {
+      await _logger.logError('Start Tracking', e.toString());
       print('Error starting location tracking: $e');
       return false;
     }
@@ -164,14 +191,22 @@ class LocationService {
 
   /// Enable auto-ping (requires LoRa device to be connected)
   void enableAutoPing() {
-    if (_loraCompanion.isDeviceConnected) {
+    final isConnected = _loraCompanion.isDeviceConnected;
+    final connectionType = _loraCompanion.connectionType;
+    _logger.logPingEvent('enableAutoPing() called - Device connected: $isConnected, Type: ${connectionType.name}');
+    
+    if (isConnected) {
       _autoPingEnabled = true;
+      _logger.logPingEvent('Auto-ping enabled (interval: ${_pingIntervalMeters}m)');
+    } else {
+      _logger.logPingEvent('Auto-ping enable FAILED - no device connected');
     }
   }
 
   /// Disable auto-ping
   void disableAutoPing() {
     _autoPingEnabled = false;
+    _logger.logPingEvent('Auto-ping disabled');
   }
 
   /// Check if auto-ping is enabled
@@ -192,6 +227,7 @@ class LocationService {
   /// Handle new position from location stream
   void _handleNewPosition(Position position) async {
     final latLng = LatLng(position.latitude, position.longitude);
+    await _logger.logLocationEvent('GPS update: ${latLng.latitude}, ${latLng.longitude}, accuracy: ${position.accuracy}m');
     
     // Broadcast current position to listeners
     _currentPositionController.add(latLng);
@@ -209,7 +245,14 @@ class LocationService {
     );
 
     // Check if we should trigger a ping (but don't wait for it)
-    if (_autoPingEnabled && _loraCompanion.isDeviceConnected) {
+    final isConnected = _loraCompanion.isDeviceConnected;
+    
+    // Log detailed debug info on every GPS update when auto-ping is enabled
+    if (_autoPingEnabled) {
+      await _logger.logPingEvent('Checking ping condition: autoPing=$_autoPingEnabled, deviceConnected=$isConnected, lastPingPos=${_lastPingPosition != null ? "set" : "null"}');
+    }
+    
+    if (_autoPingEnabled && isConnected) {
       bool shouldPing = false;
       
       if (_lastPingPosition == null) {
@@ -224,6 +267,8 @@ class LocationService {
           latLng.longitude,
         );
         
+        await _logger.logPingEvent('Distance from last ping: ${distance.toStringAsFixed(1)}m (threshold: ${_pingIntervalMeters}m)');
+        
         if (distance >= _pingIntervalMeters) {
           shouldPing = true;
         }
@@ -232,6 +277,7 @@ class LocationService {
       if (shouldPing) {
         // Update last ping position immediately to prevent multiple pings
         _lastPingPosition = latLng;
+        await _logger.logPingEvent('Auto-ping triggered at ${latLng.latitude}, ${latLng.longitude}');
         
         // Notify UI that ping is starting
         _pingEventController.add('pinging');
@@ -275,6 +321,7 @@ class LocationService {
   /// Perform ping in background and update sample when complete
   void _performPingInBackground(LatLng latLng, String geohash) async {
     try {
+      await _logger.logPingEvent('Sending ping to LoRa device...');
       final pingResult = await _loraCompanion.ping(
         latitude: latLng.latitude,
         longitude: latLng.longitude,
@@ -284,6 +331,7 @@ class LocationService {
       final pingSuccess = pingResult.status == PingStatus.success;
       final nodeId = pingResult.nodeId;
       
+      await _logger.logPingEvent('Ping result: ${pingResult.status.name}, Node: $nodeId, RSSI: ${pingResult.rssi}, SNR: ${pingResult.snr}');
       print('Ping complete: ${pingResult.status.name}, Node: $nodeId, RSSI: ${pingResult.rssi}, SNR: ${pingResult.snr}');
       
       // Update notification with result
@@ -322,6 +370,7 @@ class LocationService {
       // Notify listeners
       _sampleSavedController.add(null);
     } catch (e) {
+      await _logger.logError('Background Ping', e.toString());
       print('Error during background ping: $e');
       // Save failed ping result
       final sample = Sample(
@@ -342,17 +391,22 @@ class LocationService {
 
   /// Stop tracking location
   Future<void> stopTracking() async {
+    await _logger.logServiceEvent('stopTracking() called');
+    
     await _positionStreamSubscription?.cancel();
     _positionStreamSubscription = null;
     
     // Stop foreground service
     await FlutterForegroundTask.stopService();
+    await _logger.logServiceEvent('Foreground service stopped');
     
     // Disable wakelock when tracking stops
     await WakelockPlus.disable();
+    await _logger.logPowerEvent('Wakelock disabled');
     print('Wakelock disabled');
     
     _isTracking = false;
+    await _logger.logServiceEvent('Tracking stopped successfully');
   }
 
   /// Check if currently tracking
@@ -378,9 +432,13 @@ class LocationService {
     return await _dbService.exportSamples();
   }
 
+  /// Get the debug log file path
+  String? get debugLogPath => _logger.logFilePath;
+
   /// Dispose resources
   void dispose() {
     stopTracking();
+    _logger.close();
     _currentPositionController.close();
     _sampleSavedController.close();
     _pingEventController.close();
