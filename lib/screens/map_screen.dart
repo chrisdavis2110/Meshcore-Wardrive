@@ -30,7 +30,7 @@ class MapScreen extends StatefulWidget {
 }
 
 class _MapScreenState extends State<MapScreen> {
-  static const String appVersion = '1.0.11';
+  static const String appVersion = '1.0.9';
   
   final LocationService _locationService = LocationService();
   final MapController _mapController = MapController();
@@ -66,6 +66,9 @@ class _MapScreenState extends State<MapScreen> {
   ConnectionType _connectionType = ConnectionType.none;
   int? _batteryPercent;
   StreamSubscription<int?>? _batterySubscription;
+  
+  // Auto-follow GPS location
+  bool _followLocation = false;
 
   @override
   void initState() {
@@ -87,6 +90,11 @@ class _MapScreenState extends State<MapScreen> {
       setState(() {
         _currentPosition = position;
       });
+      
+      // Auto-follow if enabled
+      if (_followLocation && position != null) {
+        _mapController.move(position, _mapController.camera.zoom);
+      }
     });
     
     // Subscribe to sample saved events - reload map when new samples are saved
@@ -312,16 +320,19 @@ class _MapScreenState extends State<MapScreen> {
     );
   }
 
-  Future<void> _centerOnCurrentLocation() async {
-    // Get fresh GPS position
-    final pos = await _locationService.getCurrentPosition();
-    if (pos != null) {
-      setState(() {
-        _currentPosition = pos;
-      });
-      _mapController.move(pos, 13.0);
+  void _toggleFollowLocation() {
+    setState(() {
+      _followLocation = !_followLocation;
+    });
+    
+    if (_followLocation) {
+      // Center on current location when enabling follow
+      if (_currentPosition != null) {
+        _mapController.move(_currentPosition!, _mapController.camera.zoom);
+      }
+      _showSnackBar('Auto-follow enabled');
     } else {
-      _showSnackBar('Could not get current location');
+      _showSnackBar('Auto-follow disabled');
     }
   }
 
@@ -371,8 +382,11 @@ class _MapScreenState extends State<MapScreen> {
           FloatingActionButton(
             heroTag: 'location',
             mini: true,
-            onPressed: _centerOnCurrentLocation,
-            child: const Icon(Icons.my_location),
+            onPressed: _toggleFollowLocation,
+            backgroundColor: _followLocation ? Colors.blue : null,
+            child: Icon(
+              _followLocation ? Icons.gps_fixed : Icons.gps_not_fixed,
+            ),
           ),
           const SizedBox(height: 8),
           FloatingActionButton(
@@ -396,6 +410,18 @@ class _MapScreenState extends State<MapScreen> {
         initialZoom: 13.0,
         minZoom: 3.0,
         maxZoom: 18.0,
+        onMapEvent: (event) {
+          // Disable follow mode if user manually pans/drags the map
+          if (event is MapEventMoveStart && event.source == MapEventSource.mapController) {
+            // Ignore programmatic moves (from auto-follow)
+            return;
+          }
+          if (event is MapEventMoveStart && _followLocation) {
+            setState(() {
+              _followLocation = false;
+            });
+          }
+        },
       ),
       children: [
         TileLayer(
