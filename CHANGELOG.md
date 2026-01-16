@@ -5,12 +5,15 @@
 ### Features
 - **Show Coverage Boxes Toggle**: Added toggle in settings to hide/show coverage squares on the map
 - **Smaller Sample Markers**: Reduced sample marker size by 25% (from 16px to 12px) for cleaner map display
+- **Repeater Friendly Names Upload**: App now uploads repeater friendly names to web map alongside node IDs
 - **Settings Service Enhancement**: Added `getShowCoverage()` and `setShowCoverage()` methods to persist coverage visibility preference
 
 ### Improvements
 - Users can now declutter the map by toggling coverage boxes on/off
 - Sample dots are less intrusive on the map while remaining visible
 - Coverage visibility setting persists between app sessions
+- Web map will now display custom repeater names (e.g., "Bob's Repeater") instead of just node IDs
+- Repeater names pulled from discovered repeaters list and LoRa service contact cache
 
 ## v1.0.14 - 2026-01-16
 
