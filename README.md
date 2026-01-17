@@ -5,7 +5,7 @@ A mobile wardriving application for mapping MeshCore mesh network coverage in re
 
 ## 📥 Download
 
-**Latest Release:** [v1.0.16 APK]([releases/meshcore-wardrive-v1.0.16.apk](https://github.com/mintylinux/Meshcore-Wardrive-Android/releases/tag/1.0.16)) (53.5 MB)
+**Latest Release:** [v1.0.16 APK]([releases/meshcore-wardrive-v1.0.16.apk](github.com/mintylinux/Meshcore-Wardrive-Android/releases/tag/1.0.16)) (53.5 MB)
 
 ## 🚀 Quick Start
 
