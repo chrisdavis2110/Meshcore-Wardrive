@@ -3,6 +3,10 @@
 
 A mobile wardriving application for mapping MeshCore mesh network coverage in real-time.
 
+## 📥 Download
+
+**Latest Release:** [v1.0.16 APK](releases/meshcore-wardrive-v1.0.16.apk) (53.5 MB)
+
 ## 🚀 Quick Start
 
 1. **Download the APK** from the releases folder
@@ -49,7 +53,7 @@ View the live community coverage map at: **https://meshwar-map.pages.dev**
 2. As you move, it sends ping messages on the #meshwar channel
 3. Repeaters that hear your ping respond with an echo
 4. The app records which repeaters responded and their signal quality
-5. Coverage is visualized as colored grid squares (~153m x 153m)
+5. Coverage is visualized as colored grid squares (~1.2km x 610m)
 6. Data can be uploaded to the web map for community viewing
 
 ## 🔧 Configuration
@@ -62,7 +66,7 @@ View the live community coverage map at: **https://meshwar-map.pages.dev**
 
 ### Default Settings
 - Ping interval: 0.5 miles (805 meters)
-- Grid size: ~153m x 153m squares
+- Grid size: ~1.2km x 610m squares (precision 6)
 - GPS accuracy: High
 - Update frequency: Every 5 meters of movement
 
@@ -102,6 +106,15 @@ View the live community coverage map at: **https://meshwar-map.pages.dev**
 - For Bluetooth: Make sure device is paired in Android settings first
 - Try disconnecting and reconnecting
 
+**Samsung Galaxy Fold GPS/Auto-Ping Issues?**
+- Go to Settings → Debug → Debug Diagnostics
+- Start tracking, reproduce the issue, then share the debug log
+- Check Samsung battery optimization settings:
+  - Set app to "Unrestricted" battery usage
+  - Add to "Never sleeping apps" in Device Care
+  - Disable "Put app to sleep" for this app
+  - Use "Allow all the time" location permission (not just "While using")
+
 **"#meshwar Not Found" error?**
 - You must join #meshwar channel in MeshCore app first
 - Get the QR code from another user
@@ -137,6 +150,131 @@ The more users contribute, the more accurate the coverage map becomes!
 
 ## 📜 Version History
 
+### v1.0.16 (2026-01-17)
+**Critical Fix:**
+- 🔍 **FIXED: #meshwar channel discovery now searches all 40 channels**
+- 📡 Previously only searched channels 0-7, missing #meshwar on higher channels
+- ⏱️ Extended discovery timeout from 3s to 6s to accommodate more channels
+- ✅ Fixes connection issues for users with #meshwar on channels 8-39
+
+### v1.0.15 (2026-01-16)
+**New Features:**
+- 👁️ **Show Coverage Boxes toggle** - Hide/show coverage squares in settings
+- 🎯 **Smaller sample markers** - Reduced sample dot size by 25% for cleaner map display
+- 📡 **Repeater friendly names on web map** - Map now displays custom repeater names instead of just node IDs
+- 🗺️ Declutter the map by toggling coverage boxes on/off
+
+### v1.0.14 (2026-01-16)
+**Critical Fix:**
+- 🛠️ **FIXED: Repeater ID detection** - App now correctly identifies which repeater responded to pings
+- 📡 Proper parsing of mesh network routing paths to extract actual responding repeater
+- 🎯 Coverage squares and sample popups now show accurate repeater IDs
+- ✅ Fixes issue where wrong node IDs were being recorded in wardrive data
+
+### v1.0.13 (2026-01-12)
+**New Features:**
+- 👁️ **Show GPS Samples toggle** - Hide blue GPS-only markers to declutter map
+- 🗺️ Focus on ping results by toggling GPS samples on/off in settings
+
+### v1.0.12 (2026-01-12)
+**Critical Fixes:**
+- 🛠️ **FIXED: Sample data overwriting bug** - Data now accumulates instead of replacing
+- 📊 Fixed coverage showing decimal errors (1.2000000000000002)
+- 🗺️ Map now auto-centers on your location at startup
+
+**New Features:**
+- 🟢 **Color-coded samples**: Green=success, Red=fail, Blue=GPS-only
+- 🎯 Visual coverage quality at a glance
+
+### v1.0.11 (2026-01-11)
+**New Features:**
+- 👆 **Clickable sample markers** - Tap any sample dot to see repeater, RSSI, and SNR
+- 📊 View detailed ping info including signal strength and quality
+- ⏱️ Sample timestamps and GPS coordinates in popup
+
+**Critical Fix:**
+- 🔧 **FIXED: RSSI/SNR values now display correctly in ping results**
+- 📶 Signal strength and quality metrics now accurate
+- 🎯 0x88 frames properly parsed as raw radio log data
+- ✅ Fixes null values in debug terminal
+
+### v1.0.10 (2026-01-11)
+**Major Features:**
+- 🏛️ **Configurable Coverage Resolution** - Adjust square size from 20km (regional) down to 38m (building-level)
+- 🧠 **Smart Sample Weighting** - Newer data automatically overrides contradicting old data
+- ⏳ Time-based decay keeps maps accurate as coverage changes
+- 📊 Perfect for both drivers (large squares) and walkers (small squares)
+
+### v1.0.9 (2026-01-11)
+**New Features:**
+- 📍 **Auto-follow GPS location** - Map automatically centers and follows your blue dot
+- 🔄 Toggle with GPS button - blue when active, gray when inactive
+- 👆 Automatically disables when you manually pan the map
+
+### v1.0.8 (2026-01-11)
+**Critical Fix:**
+- 🚨 **FIXED: Removed Seattle-area geofence blocking auto-ping outside 60-mile radius**
+- 🌍 Auto-ping now works globally, anywhere on Earth
+- 🔧 Fixes Samsung Galaxy Fold 6/7 and other users' auto-ping not triggering
+- ✅ App now supports worldwide coverage collection
+
+### v1.0.7 (2026-01-10)
+**New Features:**
+- 📱 Tap coverage squares to see detailed info
+- 📊 Shows samples, success rate, received/lost pings, and repeater IDs
+- 🗺️ Same coverage info as webmap
+- 👆 Draggable scrollable settings menu
+
+**Bug Fixes:**
+- 🔧 Fixed settings menu overlapping top bar and nav buttons
+- 🔧 Fixed repeater IDs showing actual nodes that echoed pings
+
+### v1.0.6 (2026-01-10)
+**Improvements:**
+- ⚡ Reduced ping timeout from 30s to 20s for faster response detection
+- ⚡ Improved ping reliability matching MeshCore app behavior
+
+### v1.0.5 (2026-01-09)
+**Bug Fix:**
+- 🔧 Fixed coverage squares not populating when auto-ping is enabled
+- 🔧 Eliminated duplicate GPS samples that were preventing coverage display
+
+### v1.0.4 (2026-01-09)
+**Improvements:**
+- ✨ Increased map zoom out range for better overview
+
+### v1.0.3 (2026-01-09)
+**New Features:**
+- ✨ Auto-ping visual feedback - Orange pulse animation on map when pinging
+- ✨ Persistent notification updates show ping status and results
+- ✨ Check for Updates - Compare your version with latest GitHub release
+- ✨ View on GitHub link in settings
+- ✨ Increased map zoom out range for better overview
+
+### v1.0.2 (2026-01-09)
+**Bug Fix:**
+- 🔧 Fixed settings menu being hidden behind navigation bar on devices with on-screen buttons
+
+### v1.0.1 (2026-01-09)
+**Bug Fixes:**
+- 🔧 Fixed background GPS tracking on modern Android devices (Pixel 8, etc.)
+- 🔧 Implemented foreground service with persistent notification
+- 🔧 Fixed map not updating in real-time during tracking
+- 🔧 Fixed auto-ping blocking location updates
+- 🔧 Debug terminal now scrolls to latest logs when opened
+
+**Improvements:**
+- ⚡ Non-blocking ping system - location tracking continues smoothly
+- ⚡ Real-time map updates when samples are saved
+- ⚡ Changed grid precision to 6 for better coverage while walking
+- 📱 Added notification permission request for Android 13+
+
+**Web Map Updates:**
+- 🌐 Disabled infinite horizontal scrolling
+- 🌐 Fixed repeater display to only show when pings received
+- 🌐 Filtered out "Unknown" nodes from repeater lists
+- 🌐 Synced grid precision with Android app
+
 ### v1.0.0 (2026-01-08)
 - Initial release
 - GPS tracking with background support
@@ -152,6 +290,10 @@ The more users contribute, the more accurate the coverage map becomes!
 For issues, questions, or feature requests:
 - Open an issue on GitHub
 - Check existing issues for solutions
+
+## 📄 License
+
+[Specify your license here]
 
 ## 🙏 Credits
 
