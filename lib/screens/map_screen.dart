@@ -31,7 +31,7 @@ class MapScreen extends StatefulWidget {
 }
 
 class _MapScreenState extends State<MapScreen> {
-  static const String appVersion = '1.0.16';
+  static const String appVersion = '1.0.17';
   
   final LocationService _locationService = LocationService();
   final MapController _mapController = MapController();
@@ -205,17 +205,31 @@ class _MapScreenState extends State<MapScreen> {
 
   Future<void> _toggleTracking() async {
     if (_isTracking) {
+      // Stop tracking and auto-ping
       await _locationService.stopTracking();
+      _locationService.disableAutoPing();
       setState(() {
         _isTracking = false;
+        _autoPingEnabled = false;
       });
     } else {
+      // Start tracking
       final started = await _locationService.startTracking();
       if (started) {
-        setState(() {
-          _isTracking = true;
-        });
-        _showSnackBar('Location tracking started');
+        // Auto-enable ping if LoRa is connected
+        if (_loraConnected) {
+          _locationService.enableAutoPing();
+          setState(() {
+            _isTracking = true;
+            _autoPingEnabled = true;
+          });
+          _showSnackBar('Location tracking and auto-ping started');
+        } else {
+          setState(() {
+            _isTracking = true;
+          });
+          _showSnackBar('Location tracking started');
+        }
       } else {
         _showSnackBar('Failed to start tracking. Check permissions.');
       }
@@ -732,12 +746,6 @@ class _MapScreenState extends State<MapScreen> {
                       onPressed: _manualPing,
                       tooltip: 'Manual Ping',
                       color: Colors.blue,
-                    ),
-                  if (_loraConnected)
-                    Switch(
-                      value: _autoPingEnabled,
-                      onChanged: _toggleAutoPing,
-                      activeColor: Colors.green,
                     ),
                 ],
               ),
@@ -1890,7 +1898,7 @@ class _MapScreenState extends State<MapScreen> {
           context: context,
           builder: (context) => AlertDialog(
             title: Text(result.success ? 'Upload Complete' : 'Upload Failed'),
-            content: Text(result.message),
+            content: Text(result.success ? 'Upload Complete' : result.message),
             actions: [
               TextButton(
                 onPressed: () => Navigator.pop(context),
