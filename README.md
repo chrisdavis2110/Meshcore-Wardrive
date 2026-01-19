@@ -1,4 +1,3 @@
-
 # MeshCore Wardrive
 
 A mobile wardriving application for mapping MeshCore mesh network coverage in real-time.
@@ -8,9 +7,8 @@ A mobile wardriving application for mapping MeshCore mesh network coverage in re
 1. **Download the APK** from the releases folder
 2. **Enable "Install from Unknown Sources"** in your Android settings
 3. **Install the APK** on your device
-4. **Join #meshwar channel** in the MeshCore app (get QR code from another user)
-5. **Connect your LoRa device** via USB or Bluetooth
-6. **Start wardriving!**
+4. **Connect your LoRa device** via USB or Bluetooth
+5. **Start wardriving!**
 
 ## ✨ Features
 
@@ -46,7 +44,6 @@ View the live community coverage map at: **https://meshwar-map.pages.dev**
 ## 🎯 How It Works
 
 1. The app connects to your MeshCore companion radio
-2. As you move, it sends ping messages on the #meshwar channel
 3. Repeaters that hear your ping respond with an echo
 4. The app records which repeaters responded and their signal quality
 5. Coverage is visualized as colored grid squares (~1.2km x 610m)
@@ -83,12 +80,11 @@ View the live community coverage map at: **https://meshwar-map.pages.dev**
 
 ## 📖 Usage Tips
 
-1. **Before First Use**: Join #meshwar in MeshCore app
-2. **Connect Device**: Use USB for most reliable connection
-3. **Enable Tracking**: Press green play button to start GPS tracking
-4. **Enable Auto-Ping**: Toggle the switch to auto-ping while driving
-5. **Manual Testing**: Use manual ping button to test specific locations
-6. **Upload Data**: Share your findings via Settings → Upload Data
+1. **Connect Device**: Use USB for most reliable connection
+2. **Enable Tracking**: Press green play button to start GPS tracking
+3. **Enable Auto-Ping**: Toggle the switch to auto-ping while driving
+4. **Manual Testing**: Use manual ping button to test specific locations
+5. **Upload Data**: Share your findings via Settings → Upload Data
 
 ## 🐛 Troubleshooting
 
@@ -110,12 +106,7 @@ View the live community coverage map at: **https://meshwar-map.pages.dev**
   - Add to "Never sleeping apps" in Device Care
   - Disable "Put app to sleep" for this app
   - Use "Allow all the time" location permission (not just "While using")
-
-**"#meshwar Not Found" error?**
-- You must join #meshwar channel in MeshCore app first
-- Get the QR code from another user
-- Reconnect after joining the channel
-
+  
 **No repeater responses?**
 - Verify you're in an area with repeater coverage
 - Check LoRa device is connected (icon in app)
@@ -145,6 +136,24 @@ Help build the community coverage map:
 The more users contribute, the more accurate the coverage map becomes!
 
 ## 📜 Version History
+
+### v1.0.18 (2026-01-19)
+**Critical Fix:**
+- 🐛 **FIXED: Discovery protocol now working** - Changed type_filter from raw enum value (0x02) to bitmask (0x04)
+- 📡 Repeaters now respond to Discovery requests as intended
+- 🔍 Fixed protocol implementation to match MeshCore firmware expectations
+- ✨ Shortened repeater public key display in logs from 64 to 8 characters for readability
+
+### v1.0.17 (2026-01-18)
+**New Features:**
+- 📱 **Portrait mode lock** - App stays in true north orientation, no longer rotates with device
+- 🎮 **Unified tracking button** - Play button now starts both GPS tracking AND auto-ping together
+- ✅ **Simplified upload message** - Success dialog now shows just "Upload Complete"
+
+**Changes:**
+- ❌ Removed auto-ping toggle switch - now controlled by tracking button
+- 🚀 Auto-ping automatically starts when tracking starts (if LoRa device connected)
+- 🛑 Both tracking and auto-ping stop together when pressing stop
 
 ### v1.0.16 (2026-01-17)
 **Critical Fix:**
