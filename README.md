@@ -39,7 +39,6 @@ View the live community coverage map at: **https://meshwar-map.pages.dev**
 
 - Android device with GPS
 - MeshCore companion radio device
-- Access to #meshwar channel (shared via QR code)
 
 ## 🎯 How It Works
 
@@ -81,8 +80,7 @@ View the live community coverage map at: **https://meshwar-map.pages.dev**
 ## 📖 Usage Tips
 
 1. **Connect Device**: Use USB for most reliable connection
-2. **Enable Tracking**: Press green play button to start GPS tracking
-3. **Enable Auto-Ping**: Toggle the switch to auto-ping while driving
+2. **Enable Tracking/AutoPing**: Press green play button to start GPS tracking and Auto Ping
 4. **Manual Testing**: Use manual ping button to test specific locations
 5. **Upload Data**: Share your findings via Settings → Upload Data
 
@@ -98,15 +96,6 @@ View the live community coverage map at: **https://meshwar-map.pages.dev**
 - For Bluetooth: Make sure device is paired in Android settings first
 - Try disconnecting and reconnecting
 
-**Samsung Galaxy Fold GPS/Auto-Ping Issues?**
-- Go to Settings → Debug → Debug Diagnostics
-- Start tracking, reproduce the issue, then share the debug log
-- Check Samsung battery optimization settings:
-  - Set app to "Unrestricted" battery usage
-  - Add to "Never sleeping apps" in Device Care
-  - Disable "Put app to sleep" for this app
-  - Use "Allow all the time" location permission (not just "While using")
-  
 **No repeater responses?**
 - Verify you're in an area with repeater coverage
 - Check LoRa device is connected (icon in app)
