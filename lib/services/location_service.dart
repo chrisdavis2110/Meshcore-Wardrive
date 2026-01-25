@@ -336,7 +336,10 @@ class LocationService {
       print('Ping complete: ${pingResult.status.name}, Node: $nodeId, RSSI: ${pingResult.rssi}, SNR: ${pingResult.snr}');
       
       // Update notification with result
-      final resultText = pingSuccess ? '✅ Heard by ${nodeId ?? "repeater"}' : '❌ No response';
+      final shortId = (nodeId != null && nodeId.isNotEmpty)
+          ? (nodeId.length > 8 ? nodeId.substring(0, 8).toUpperCase() : nodeId.toUpperCase())
+          : 'repeater';
+      final resultText = pingSuccess ? '✅ Heard by $shortId' : '❌ No response';
       FlutterForegroundTask.updateService(
         notificationTitle: 'MeshCore Wardrive',
         notificationText: resultText,
@@ -431,6 +434,11 @@ class LocationService {
   /// Export samples as JSON
   Future<List<Map<String, dynamic>>> exportSamples() async {
     return await _dbService.exportSamples();
+  }
+
+  /// Import samples from JSON file (returns count of imported samples)
+  Future<int> importSamples(List<Map<String, dynamic>> jsonData) async {
+    return await _dbService.importSamples(jsonData);
   }
 
   /// Get the debug log file path

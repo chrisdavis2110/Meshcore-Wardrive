@@ -10,6 +10,7 @@ class SettingsService {
   static const String _pingIntervalKey = 'ping_interval_meters';
   static const String _coveragePrecisionKey = 'coverage_precision';
   static const String _ignoredRepeaterPrefixKey = 'ignored_repeater_prefix';
+  static const String _includeOnlyRepeatersKey = 'include_only_repeaters';
   
   Future<bool> getShowSamples() async {
     final prefs = await SharedPreferences.getInstance();
@@ -102,6 +103,22 @@ class SettingsService {
       await prefs.remove(_ignoredRepeaterPrefixKey);
     } else {
       await prefs.setString(_ignoredRepeaterPrefixKey, value);
+    }
+  }
+  
+  /// Get comma-separated list of repeater prefixes to ONLY hear from (whitelist)
+  /// Empty or null = hear from all repeaters
+  Future<String?> getIncludeOnlyRepeaters() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_includeOnlyRepeatersKey);
+  }
+  
+  Future<void> setIncludeOnlyRepeaters(String? value) async {
+    final prefs = await SharedPreferences.getInstance();
+    if (value == null || value.isEmpty) {
+      await prefs.remove(_includeOnlyRepeatersKey);
+    } else {
+      await prefs.setString(_includeOnlyRepeatersKey, value);
     }
   }
 }

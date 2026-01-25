@@ -19,6 +19,8 @@ import 'package:usb_serial/usb_serial.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:http/http.dart' as http;
 import 'package:url_launcher/url_launcher.dart';
+import 'package:file_picker/file_picker.dart';
+import 'package:share_plus/share_plus.dart';
 import 'debug_log_screen.dart';
 import 'debug_diagnostics_screen.dart';
 import '../main.dart';
@@ -31,7 +33,7 @@ class MapScreen extends StatefulWidget {
 }
 
 class _MapScreenState extends State<MapScreen> {
-  static const String appVersion = '1.0.17';
+  static const String appVersion = '1.0.22';
   
   final LocationService _locationService = LocationService();
   final MapController _mapController = MapController();
@@ -46,11 +48,13 @@ class _MapScreenState extends State<MapScreen> {
   String _colorMode = 'quality';
   bool _showSamples = false;
   bool _showGpsSamples = true; // Show GPS-only samples (null pingSuccess)
+  bool _showSuccessfulOnly = false; // Show only samples with successful pings
   bool _showCoverage = true; // Show coverage boxes
   bool _showEdges = true;
   bool _showRepeaters = true;
   bool _autoPingEnabled = false;
   String? _ignoredRepeaterPrefix;
+  String? _includeOnlyRepeaters; // Comma-separated list of repeater prefixes to show
   double _pingIntervalMeters = 805.0; // Default 0.5 miles
   int _coveragePrecision = 6; // Default precision 6 (~1.2km squares)
   
@@ -74,6 +78,9 @@ class _MapScreenState extends State<MapScreen> {
   
   // Auto-follow GPS location
   bool _followLocation = false;
+  
+  // Map rotation lock
+  bool _lockRotationNorth = false;
 
   @override
   void initState() {
@@ -146,6 +153,7 @@ class _MapScreenState extends State<MapScreen> {
     final pingInterval = await _settingsService.getPingInterval();
     final coveragePrecision = await _settingsService.getCoveragePrecision();
     final ignoredPrefix = await _settingsService.getIgnoredRepeaterPrefix();
+    final includeOnly = await _settingsService.getIncludeOnlyRepeaters();
     
     setState(() {
       _showSamples = showSamples;
@@ -157,6 +165,7 @@ class _MapScreenState extends State<MapScreen> {
       _pingIntervalMeters = pingInterval;
       _coveragePrecision = coveragePrecision;
       _ignoredRepeaterPrefix = ignoredPrefix;
+      _includeOnlyRepeaters = includeOnly;
     });
     
     // Apply to services
@@ -179,18 +188,18 @@ class _MapScreenState extends State<MapScreen> {
     final samples = await _locationService.getAllSamples();
     final count = await _locationService.getSampleCount();
     
-    // Aggregate data with user's chosen coverage precision
-    final result = AggregationService.buildIndexes(
-      samples, 
-      [],
-      coveragePrecision: _coveragePrecision,
-    );
-    
     // Update connection status
     final loraService = _locationService.loraCompanion;
     
     // Sync discovered repeaters from LoRa service
     final discoveredRepeaters = loraService.discoveredRepeaters;
+    
+    // Aggregate data with user's chosen coverage precision and repeaters
+    final result = AggregationService.buildIndexes(
+      samples, 
+      discoveredRepeaters,
+      coveragePrecision: _coveragePrecision,
+    );
     
     setState(() {
       _samples = samples;
@@ -263,18 +272,96 @@ class _MapScreenState extends State<MapScreen> {
   }
 
   Future<void> _exportData() async {
+    // Ask user if they want to save to folder or share
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Export Data'),
+        content: const Text('How would you like to export your data?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, 'save'),
+            child: const Text('Save to Folder'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, 'share'),
+            child: const Text('Share'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+        ],
+      ),
+    );
+    
+    if (choice == null) return;
+    
     try {
       final data = await _locationService.exportSamples();
       final json = jsonEncode(data);
-      
-      final directory = await getExternalStorageDirectory();
       final timestamp = DateFormat('yyyyMMdd_HHmmss').format(DateTime.now());
-      final file = File('${directory!.path}/meshcore_export_$timestamp.json');
+      final fileName = 'meshcore_export_$timestamp.json';
       
-      await file.writeAsString(json);
-      _showSnackBar('Exported to ${file.path}');
+      if (choice == 'save') {
+        // Let user choose where to save (provide bytes for Android/iOS)
+        final outputFile = await FilePicker.platform.saveFile(
+          dialogTitle: 'Save Export',
+          fileName: fileName,
+          type: FileType.custom,
+          allowedExtensions: ['json'],
+          bytes: utf8.encode(json), // Required on Android/iOS
+        );
+        
+        if (outputFile != null) {
+          _showSnackBar('Exported ${data.length} samples');
+        }
+      } else if (choice == 'share') {
+        // Create temporary file and share
+        final directory = await getExternalStorageDirectory();
+        final file = File('${directory!.path}/$fileName');
+        await file.writeAsString(json);
+        
+        await Share.shareXFiles(
+          [XFile(file.path)],
+          subject: 'MeshCore Wardrive Export',
+          text: 'Exported ${data.length} samples from MeshCore Wardrive',
+        );
+        
+        _showSnackBar('Export shared');
+      }
     } catch (e) {
       _showSnackBar('Export failed: $e');
+    }
+  }
+
+  Future<void> _importData() async {
+    try {
+      // Pick a JSON file
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+      );
+      
+      if (result == null || result.files.single.path == null) {
+        return; // User cancelled
+      }
+      
+      final file = File(result.files.single.path!);
+      final jsonString = await file.readAsString();
+      final List<dynamic> jsonData = jsonDecode(jsonString);
+      
+      // Import samples
+      final importedCount = await _locationService.importSamples(
+        jsonData.cast<Map<String, dynamic>>(),
+      );
+      
+      // Reload map
+      await _loadSamples();
+      
+      _showSnackBar('Imported $importedCount new samples');
+    } catch (e) {
+      _showSnackBar('Import failed: $e');
     }
   }
 
@@ -342,39 +429,6 @@ class _MapScreenState extends State<MapScreen> {
     }
   }
   
-  void _showMeshwarNotFoundDialog() {
-    showDialog(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => AlertDialog(
-        title: const Row(
-          children: [
-            Icon(Icons.warning, color: Colors.orange),
-            SizedBox(width: 8),
-            Text('#meshwar Not Found'),
-          ],
-        ),
-        content: const Text(
-          'Before using this app, please join the #meshwar channel in the MeshCore app.\n\n'
-          'To join:\n'
-          '1. Open MeshCore app\n'
-          '2. Join or create the #meshwar channel\n'
-          '3. Reconnect this wardrive app',
-          style: TextStyle(fontSize: 14),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () {
-              Navigator.pop(context);
-              // Disconnect device since it's not configured
-              _locationService.loraCompanion.disconnectDevice();
-            },
-            child: const Text('OK'),
-          ),
-        ],
-      ),
-    );
-  }
 
   void _toggleFollowLocation() {
     setState(() {
@@ -390,6 +444,11 @@ class _MapScreenState extends State<MapScreen> {
     } else {
       _showSnackBar('Auto-follow disabled');
     }
+  }
+  
+  void _resetMapRotation() {
+    _mapController.rotate(0); // 0 degrees = north up
+    _showSnackBar('Map reset to north');
   }
 
   @override
@@ -436,6 +495,14 @@ class _MapScreenState extends State<MapScreen> {
         mainAxisAlignment: MainAxisAlignment.end,
         children: [
           FloatingActionButton(
+            heroTag: 'compass',
+            mini: true,
+            onPressed: _resetMapRotation,
+            child: const Icon(Icons.navigation),
+            tooltip: 'Reset to North',
+          ),
+          const SizedBox(height: 8),
+          FloatingActionButton(
             heroTag: 'location',
             mini: true,
             onPressed: _toggleFollowLocation,
@@ -466,6 +533,11 @@ class _MapScreenState extends State<MapScreen> {
         initialZoom: 13.0,
         minZoom: 3.0,
         maxZoom: 18.0,
+        interactionOptions: InteractionOptions(
+          flags: _lockRotationNorth 
+              ? InteractiveFlag.all & ~InteractiveFlag.rotate  // Disable rotation
+              : InteractiveFlag.all,  // Allow all interactions
+        ),
         onMapEvent: (event) {
           // Disable follow mode if user manually pans/drags the map
           if (event is MapEventMoveStart && event.source == MapEventSource.mapController) {
@@ -555,8 +627,29 @@ class _MapScreenState extends State<MapScreen> {
       if (!_showGpsSamples && sample.pingSuccess == null) {
         return false;
       }
+      
+      // If showing successful only, hide failed pings and GPS-only samples
+      if (_showSuccessfulOnly && sample.pingSuccess != true) {
+        return false;
+      }
+      
+      // If include-only repeaters is set, only show samples from those repeaters
+      if (_includeOnlyRepeaters != null && _includeOnlyRepeaters!.isNotEmpty) {
+        final allowedPrefixes = _includeOnlyRepeaters!.split(',').map((s) => s.trim().toUpperCase()).toList();
+        final sampleNodeId = sample.path?.toUpperCase() ?? '';
+        
+        // Check if sample's repeater matches any allowed prefix
+        final matches = allowedPrefixes.any((prefix) => sampleNodeId.startsWith(prefix));
+        if (!matches) {
+          return false;
+        }
+      }
+      
       return true;
     }).toList();
+    
+    // Sort by timestamp (oldest first) so newer samples render on top
+    filteredSamples.sort((a, b) => a.timestamp.compareTo(b.timestamp));
     
     final markers = filteredSamples.map((sample) {
       // Determine color based on ping result
@@ -600,8 +693,8 @@ class _MapScreenState extends State<MapScreen> {
     final polylines = _aggregationResult!.edges.map((edge) {
       return Polyline(
         points: [edge.coverage.position, edge.repeater.position],
-        color: Colors.purple.withValues(alpha: 0.3),
-        strokeWidth: 1,
+        color: Colors.purple.withValues(alpha: 0.6),  // Increased from 0.3 to 0.6
+        strokeWidth: 2,  // Increased from 1 to 2
       );
     }).toList();
     
@@ -780,15 +873,25 @@ class _MapScreenState extends State<MapScreen> {
                   const SizedBox(width: 8),
                   Expanded(
                     child: ElevatedButton.icon(
-                      onPressed: _clearData,
-                      icon: const Icon(Icons.delete, size: 18),
-                      label: const Text('Clear Map'),
+                      onPressed: _importData,
+                      icon: const Icon(Icons.download, size: 18),
+                      label: const Text('Import'),
                       style: ElevatedButton.styleFrom(
                         padding: const EdgeInsets.symmetric(vertical: 8),
                       ),
                     ),
                   ),
                 ],
+              ),
+              const SizedBox(height: 8),
+              ElevatedButton.icon(
+                onPressed: _clearData,
+                icon: const Icon(Icons.delete, size: 18),
+                label: const Text('Clear Map'),
+                style: ElevatedButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(vertical: 8),
+                  minimumSize: const Size(double.infinity, 36),
+                ),
               ),
             ],
           ),
@@ -935,13 +1038,6 @@ class _MapScreenState extends State<MapScreen> {
       );
 
       if (selected != null) {
-        // Set up channel discovery callback (USB doesn't auto-discover, but keep for consistency)
-        _locationService.loraCompanion.onChannelDiscoveryComplete = (meshwarFound) {
-          if (!meshwarFound && mounted) {
-            _showMeshwarNotFoundDialog();
-          }
-        };
-        
         final connected = await _locationService.loraCompanion.connectUsb(selected);
         if (connected) {
           _showSnackBar('Connected via USB');
@@ -986,13 +1082,6 @@ class _MapScreenState extends State<MapScreen> {
 
       if (selected != null) {
         _showSnackBar('Connecting to ${selected.platformName}...');
-        
-        // Set up channel discovery callback
-        _locationService.loraCompanion.onChannelDiscoveryComplete = (meshwarFound) {
-          if (!meshwarFound && mounted) {
-            _showMeshwarNotFoundDialog();
-          }
-        };
         
         final connected = await _locationService.loraCompanion.connectBluetooth(selected);
         if (connected) {
@@ -1186,6 +1275,57 @@ class _MapScreenState extends State<MapScreen> {
     }
   }
 
+  Future<void> _setIncludeOnlyRepeaters() async {
+    final controller = TextEditingController(text: _includeOnlyRepeaters ?? '');
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Include Only Repeaters'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text(
+              'Show ONLY samples from specific repeaters (whitelist). Useful for testing your own infrastructure.\n\n'
+              'Enter repeater prefixes separated by commas:',
+              style: TextStyle(fontSize: 13),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: controller,
+              decoration: const InputDecoration(
+                labelText: 'Repeater Prefixes',
+                hintText: 'e.g., 7E3A, A4F2, 8B',
+                isDense: true,
+              ),
+              textCapitalization: TextCapitalization.characters,
+              maxLines: 2,
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed == true) {
+      final prefixes = controller.text.isEmpty ? null : controller.text;
+      setState(() {
+        _includeOnlyRepeaters = prefixes;
+      });
+      await _settingsService.setIncludeOnlyRepeaters(prefixes);
+      _showSnackBar('Repeater whitelist updated');
+    }
+  }
+
   void _showSettings() {
     showModalBottomSheet(
       context: context,
@@ -1279,6 +1419,30 @@ class _MapScreenState extends State<MapScreen> {
                 Navigator.pop(context);
               },
             ),
+            SwitchListTile(
+              title: const Text('Show Successful Pings Only'),
+              subtitle: const Text('Hide failed pings and GPS-only samples'),
+              value: _showSuccessfulOnly,
+              onChanged: (value) async {
+                setState(() {
+                  _showSuccessfulOnly = value;
+                });
+                Navigator.pop(context);
+                _showSnackBar(value ? 'Showing successful only' : 'Showing all samples');
+              },
+            ),
+            SwitchListTile(
+              title: const Text('Lock Rotation to North'),
+              subtitle: const Text('Prevent map rotation'),
+              value: _lockRotationNorth,
+              onChanged: (value) async {
+                setState(() {
+                  _lockRotationNorth = value;
+                });
+                Navigator.pop(context);
+                _showSnackBar(value ? 'Rotation locked' : 'Rotation unlocked');
+              },
+            ),
             ListTile(
               title: const Text('Theme'),
               subtitle: Text(_getThemeModeText()),
@@ -1337,6 +1501,17 @@ class _MapScreenState extends State<MapScreen> {
               onTap: () {
                 Navigator.pop(context);
                 _setIgnoredRepeater();
+              },
+            ),
+            ListTile(
+              title: const Text('Include Only Repeaters'),
+              subtitle: Text(_includeOnlyRepeaters != null && _includeOnlyRepeaters!.isNotEmpty
+                  ? 'Whitelist: ${_includeOnlyRepeaters}' 
+                  : 'Show all repeaters'),
+              trailing: const Icon(Icons.edit),
+              onTap: () {
+                Navigator.pop(context);
+                _setIncludeOnlyRepeaters();
               },
             ),
             ListTile(
@@ -1623,7 +1798,10 @@ class _MapScreenState extends State<MapScreen> {
     
     // Get repeater name if available (sample.path holds repeater/node ID)
     final repeaterName = sample.path != null ? _getRepeaterName(sample.path) : null;
-    final repeaterDisplay = repeaterName ?? sample.path ?? 'Unknown';
+    final idOrName = repeaterName ?? sample.path ?? 'Unknown';
+    final repeaterDisplay = (repeaterName != null)
+        ? repeaterName
+        : (idOrName.length > 8 ? idOrName.substring(0, 8).toUpperCase() : idOrName.toUpperCase());
     
     showDialog(
       context: context,
@@ -1688,12 +1866,12 @@ class _MapScreenState extends State<MapScreen> {
     showDialog(
       context: context,
       builder: (context) => AlertDialog(
-        title: Text(repeater.name ?? 'Repeater ${repeater.id}'),
+        title: Text(repeater.name ?? 'Repeater ${(repeater.id.length > 8 ? repeater.id.substring(0,8) : repeater.id).toUpperCase()}'),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text('ID: ${repeater.id}', style: const TextStyle(fontFamily: 'monospace')),
+            Text('ID: ${(repeater.id.length > 8 ? repeater.id.substring(0,8) : repeater.id).toUpperCase()}', style: const TextStyle(fontFamily: 'monospace')),
             const SizedBox(height: 8),
             Text('Lat: ${repeater.position.latitude.toStringAsFixed(6)}'),
             Text('Lon: ${repeater.position.longitude.toStringAsFixed(6)}'),

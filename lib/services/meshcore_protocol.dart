@@ -21,6 +21,7 @@ const int CMD_ADD_UPDATE_CONTACT = 9;
 const int CMD_REMOVE_CONTACT = 15;
 const int CMD_SET_NAME = 19;
 const int CMD_SET_POSITION = 20;
+const int CMD_SEND_CONTROL_DATA = 55;
 
 // Response codes (radio -> app)
 const int RESP_CODE_OK = 0;
@@ -46,11 +47,16 @@ const int PUSH_CODE_MSG_WAITING = 0x83;
 const int PUSH_CODE_ACK_RECV = 0x84;
 const int PUSH_CODE_CHANNEL_MSG_RECV = 0x85;
 const int PUSH_CODE_CHANNEL_ECHO = 0x88;  // Channel message echo/repeat (136 decimal)
+const int PUSH_CODE_CONTROL_DATA = 0x8E;  // Control data packet received (142 decimal)
 
 // Advertisement types
 const int ADV_TYPE_CHAT = 1;
 const int ADV_TYPE_REPEATER = 2;
 const int ADV_TYPE_ROOM_SERVER = 3;
+
+// Control data sub-types
+const int CONTROL_SUBTYPE_DISCOVER_REQ = 0x8;
+const int CONTROL_SUBTYPE_DISCOVER_RESP = 0x9;
 
 class MeshCoreFrame {
   final int code;
@@ -604,6 +610,139 @@ class MeshCoreProtocol {
       };
     } catch (e) {
       print('Error parsing channel message frame: $e');
+      return null;
+    }
+  }
+
+  /// Create CMD_SEND_CONTROL_DATA payload for DISCOVER_REQ
+  /// tag: 4-byte random identifier to match responses
+  /// prefixOnly: if true, responses will contain 8-byte pubkey prefix instead of full 32 bytes
+  Uint8List createDiscoveryRequestPayload(int tag, {bool prefixOnly = true}) {
+    final payload = BytesBuilder();
+    
+    // flags byte: upper 4 bits = sub_type (0x8), lower bit 0 = prefix_only flag
+    final flags = (CONTROL_SUBTYPE_DISCOVER_REQ << 4) | (prefixOnly ? 0x01 : 0x00);
+    payload.addByte(flags);
+    
+    // type_filter: BITMASK for node types (bit 2 = repeaters, so 1 << 2 = 0x04)
+    payload.addByte(1 << ADV_TYPE_REPEATER);
+    
+    // tag: 4 bytes (little-endian uint32)
+    payload.addByte(tag & 0xFF);
+    payload.addByte((tag >> 8) & 0xFF);
+    payload.addByte((tag >> 16) & 0xFF);
+    payload.addByte((tag >> 24) & 0xFF);
+    
+    // since: 4 bytes (optional, default 0 = all repeaters)
+    payload.addByte(0);
+    payload.addByte(0);
+    payload.addByte(0);
+    payload.addByte(0);
+    
+    return payload.toBytes();
+  }
+
+  /// Parse PUSH_CODE_CONTROL_DATA (0x8E) frame
+  /// Format: [SNR*4 (signed)] [RSSI (signed)] [path_len] [path...] [payload...]
+  /// Returns map with 'snr', 'rssi', 'path_len', 'payload'
+  Map<String, dynamic>? parseControlDataPush(Uint8List data) {
+    try {
+      if (data.length < 3) {
+        print('⚠️ Control data push too short: ${data.length} bytes');
+        return null;
+      }
+      
+      int offset = 0;
+      
+      // SNR at byte 0 (scaled by 4x)
+      int snrRaw = data[offset++];
+      if (snrRaw > 127) snrRaw -= 256; // Convert to signed
+      final snr = (snrRaw / 4.0).round();
+      
+      // RSSI at byte 1 (signed)
+      int rssi = data[offset++];
+      if (rssi > 127) rssi -= 256;
+      
+      // Path length at byte 2
+      final pathLen = data[offset++];
+      
+      // Skip path bytes if present
+      if (data.length < offset + pathLen) {
+        print('⚠️ Control data: not enough data for path');
+        return null;
+      }
+      offset += pathLen;
+      
+      // Remaining bytes are the payload
+      final payload = data.length > offset 
+          ? Uint8List.fromList(data.sublist(offset))
+          : Uint8List(0);
+      
+      return {
+        'snr': snr,
+        'rssi': rssi,
+        'path_len': pathLen,
+        'payload': payload,
+      };
+    } catch (e) {
+      print('Error parsing control data push: $e');
+      return null;
+    }
+  }
+
+  /// Parse DISCOVER_RESP payload from control data
+  /// Returns map with 'node_type', 'snr', 'tag', 'pubkey'
+  Map<String, dynamic>? parseDiscoveryResponse(Uint8List payload) {
+    try {
+      if (payload.length < 6) {
+        print('⚠️ Discovery response too short: ${payload.length} bytes');
+        return null;
+      }
+      
+      int offset = 0;
+      
+      // Flags byte: upper 4 bits = sub_type (0x9), lower 4 bits = node_type
+      final flags = payload[offset++];
+      final subType = (flags >> 4) & 0x0F;
+      final nodeType = flags & 0x0F;
+      
+      if (subType != CONTROL_SUBTYPE_DISCOVER_RESP) {
+        print('⚠️ Not a DISCOVER_RESP: sub_type=0x${subType.toRadixString(16)}');
+        return null;
+      }
+      
+      // SNR at byte 1 (already scaled by 4, signed)
+      int snrRaw = payload[offset++];
+      if (snrRaw > 127) snrRaw -= 256;
+      final snr = (snrRaw / 4.0).round();
+      
+      // Tag: 4 bytes (little-endian uint32)
+      if (payload.length < offset + 4) {
+        print('⚠️ Discovery response: not enough data for tag');
+        return null;
+      }
+      final tag = payload[offset] |
+          (payload[offset + 1] << 8) |
+          (payload[offset + 2] << 16) |
+          (payload[offset + 3] << 24);
+      offset += 4;
+      
+      // Public key: 8 or 32 bytes (depends on prefix_only flag in request)
+      final pubkeyBytes = payload.sublist(offset);
+      final pubkey = pubkeyBytes
+          .map((b) => b.toRadixString(16).padLeft(2, '0'))
+          .join('')
+          .toUpperCase();
+      
+      return {
+        'node_type': nodeType,
+        'snr': snr,
+        'tag': tag,
+        'pubkey': pubkey,
+        'pubkey_bytes': pubkeyBytes,
+      };
+    } catch (e) {
+      print('Error parsing discovery response: $e');
       return null;
     }
   }

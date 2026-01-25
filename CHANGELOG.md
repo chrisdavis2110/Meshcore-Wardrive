@@ -1,5 +1,83 @@
 # Changelog
 
+## v1.0.22 - 2026-01-25
+
+### Fixed
+- **Sample Layering**: Newer samples now render on top of older samples
+  - When retracing paths with improved coverage, new green dots (successful) now appear on top of old red dots (failed)
+  - Samples are sorted by timestamp before rendering (oldest first, newest last)
+  - Fixes issue where updated coverage was hidden under outdated samples
+
+## v1.0.21 - 2026-01-24
+
+### Added
+- **Compass/North Button**: Floating action button with compass icon to reset map rotation to north
+- **Lock Rotation to North**: New setting to disable map rotation gestures, keeping map always north-oriented
+- **Show Successful Pings Only**: Filter to hide failed pings and GPS-only samples, showing only successful coverage
+- **Include Only Repeaters**: Whitelist specific repeaters by comma-separated prefix list (e.g., "BAD5DC49,11A958")
+  - Useful for testing coverage from specific repeaters
+  - Filters out samples from other repeaters
+
+### Improved
+- **Show Edges**: Fixed edge rendering to properly display purple lines connecting coverage squares to repeaters
+  - Edges now only connect coverage areas to repeaters that actually responded
+  - Increased line opacity from 0.3 to 0.6 and width from 1 to 2 for better visibility
+  - Fixed bug where edges were never generated due to empty repeater list
+
+### Fixed
+- Edge generation now correctly passes discovered repeaters to aggregation service
+- Edges no longer connect to nearest repeater; only show actual response paths
+
+## v1.0.20 - 2026-01-21
+
+### Fixed
+- **Ignore Repeater Prefix**: Now correctly filters mobile repeaters in Discovery protocol
+  - Added ignore check to Discovery responses (DISCOVER_RESP)
+  - Added ignore check to ACK responses from zero-hop advertisements
+  - Previously only worked with contact responses, missing Discovery/ACK packets
+
+### Added
+- **Import Data**: Import previously exported JSON files back into the app
+  - New "Import" button in control panel
+  - Automatically skips duplicate samples by ID
+  - Shows count of newly imported samples
+  - Useful for restoring data or merging datasets
+- **Export Options**: Choose how to export your data
+  - **Save to Folder**: Pick any location on your phone (Downloads, Documents, etc.)
+  - **Share**: Share via messaging apps, email, etc. (great for sharing with wardrive groups)
+  - No longer saves to hidden app folder that requires computer access
+
+### Improved
+- **Faster Ping Results**: Discovery pings now complete much faster
+  - Returns immediately after 3 seconds if repeaters respond (was 10 seconds fixed)
+  - Still waits full 10 seconds if no responses yet (catches slower repeaters)
+  - Typical ping time reduced from 10s to 3s in good coverage areas
+
+## v1.0.19 - 2026-01-19
+
+### Changed
+- **Switched to Discovery Protocol**: Replaced legacy #meshwar channel message pings with MeshCore Discovery protocol (DISCOVER_REQ/DISCOVER_RESP)
+  - Pings now broadcast to all repeaters simultaneously instead of using channels
+  - Faster response times and better reliability
+  - No longer depends on finding #meshwar channel
+  - Repeaters rate-limited to 4 responses per 2 minutes to prevent spam
+- **Upload Deduplication**: Added client-side and server-side deduplication to prevent uploading the same samples multiple times
+  - Client tracks uploaded samples per endpoint in local database
+  - Server uses Cloudflare KV storage with 90-day TTL to reject duplicate sample IDs
+  - Deduplication only applies to default map endpoint; self-hosted maps can upload without restriction
+  - Users can keep their data locally without worrying about duplicate uploads
+
+### Improved
+- **Repeater Key Display**: All repeater public keys now display as 8-character prefixes throughout the app
+  - Manual ping results show truncated keys (e.g., "BAD5DC49" instead of 64-character full key)
+  - Foreground notification displays truncated keys
+  - Upload payloads send 8-character prefixes instead of full keys
+  - Discovered repeater list shows truncated IDs
+  - Much more readable and consistent UI
+
+### Fixed
+- Build cache issue requiring `flutter clean` for proper code updates
+
 ## v1.0.17 - 2026-01-18
 
 ### Added

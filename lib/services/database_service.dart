@@ -7,7 +7,7 @@ import 'dart:io';
 class DatabaseService {
   static Database? _database;
   static const String _databaseName = 'meshcore_wardrive.db';
-  static const int _databaseVersion = 3;
+  static const int _databaseVersion = 4;
 
   static const String tableSamples = 'samples';
 
@@ -41,7 +41,8 @@ class DatabaseService {
         rssi INTEGER,
         snr INTEGER,
         pingSuccess INTEGER,
-        observerNames TEXT
+        observerNames TEXT,
+        uploaded INTEGER DEFAULT 0
       )
     ''');
 
@@ -66,6 +67,10 @@ class DatabaseService {
     if (oldVersion < 3) {
       // Add observer names column
       await db.execute('ALTER TABLE $tableSamples ADD COLUMN observerNames TEXT');
+    }
+    if (oldVersion < 4) {
+      // Add uploaded tracking column
+      await db.execute('ALTER TABLE $tableSamples ADD COLUMN uploaded INTEGER DEFAULT 0');
     }
   }
 
@@ -133,6 +138,40 @@ class DatabaseService {
     return maps.map((map) => Sample.fromMap(map)).toList();
   }
 
+  /// Get only samples that haven't been uploaded yet
+  Future<List<Sample>> getUnuploadedSamples() async {
+    final db = await database;
+    final List<Map<String, dynamic>> maps = await db.query(
+      tableSamples,
+      where: 'uploaded = 0',
+      orderBy: 'timestamp DESC',
+    );
+
+    return maps.map((map) => Sample.fromMap(map)).toList();
+  }
+
+  /// Mark specific samples as uploaded
+  Future<void> markSamplesAsUploaded(List<String> sampleIds) async {
+    final db = await database;
+    final batch = db.batch();
+    for (final id in sampleIds) {
+      batch.update(
+        tableSamples,
+        {'uploaded': 1},
+        where: 'id = ?',
+        whereArgs: [id],
+      );
+    }
+    await batch.commit(noResult: true);
+  }
+
+  /// Get count of unuploaded samples
+  Future<int> getUnuploadedSampleCount() async {
+    final db = await database;
+    final result = await db.rawQuery('SELECT COUNT(*) FROM $tableSamples WHERE uploaded = 0');
+    return Sqflite.firstIntValue(result) ?? 0;
+  }
+
   /// Get the most recent sample
   Future<Sample?> getMostRecentSample() async {
     final db = await database;
@@ -173,6 +212,40 @@ class DatabaseService {
   Future<List<Map<String, dynamic>>> exportSamples() async {
     final samples = await getAllSamples();
     return samples.map((s) => s.toJson()).toList();
+  }
+
+  /// Import samples from JSON (skips duplicates by ID)
+  Future<int> importSamples(List<Map<String, dynamic>> jsonData) async {
+    final db = await database;
+    int importedCount = 0;
+    
+    for (final json in jsonData) {
+      try {
+        final sample = Sample.fromJson(json);
+        
+        // Check if sample with this ID already exists
+        final existing = await db.query(
+          tableSamples,
+          where: 'id = ?',
+          whereArgs: [sample.id],
+          limit: 1,
+        );
+        
+        if (existing.isEmpty) {
+          await db.insert(
+            tableSamples,
+            sample.toMap(),
+            conflictAlgorithm: ConflictAlgorithm.ignore,
+          );
+          importedCount++;
+        }
+      } catch (e) {
+        print('Error importing sample: $e');
+        // Skip invalid samples
+      }
+    }
+    
+    return importedCount;
   }
 
   /// Close the database

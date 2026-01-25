@@ -129,22 +129,16 @@ class AggregationService {
       }
     }
 
-    // Build edges from coverage to repeaters
+    // Build edges from coverage to repeaters that actually responded
     for (final coverage in hashToCoverage.values) {
-      if (idToRepeaters.isNotEmpty) {
-        final bestRepeaterId = GeohashUtils.getBestRepeater(
-          coverage.position,
-          idToRepeaters,
-        );
-
-        if (bestRepeaterId != null) {
-          final repeaterData = idToRepeaters[bestRepeaterId];
-          if (repeaterData != null) {
-            edgeList.add(Edge(
-              coverage: coverage,
-              repeater: repeaterData['repeater'] as Repeater,
-            ));
-          }
+      // Only create edges for repeaters that actually responded in this coverage area
+      for (final repeaterId in coverage.repeaters) {
+        final repeaterData = idToRepeaters[repeaterId];
+        if (repeaterData != null) {
+          edgeList.add(Edge(
+            coverage: coverage,
+            repeater: repeaterData['repeater'] as Repeater,
+          ));
         }
       }
     }

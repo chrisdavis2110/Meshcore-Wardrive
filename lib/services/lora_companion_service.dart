@@ -59,13 +59,12 @@ class LoRaCompanionService {
   
   // State
   final _pingResultController = StreamController<PingResult>.broadcast();
-  final _pendingPings = <String, Completer<PingResult>>{};
-  final Map<String, List<String>> _pingEchoes = {}; // Track multiple echoes per ping
+  final _pendingPings = <int, Completer<PingResult>>{}; // tag -> completer
+  final Map<int, List<Map<String, dynamic>>> _pingResponses = {}; // tag -> list of responses
+  final _random = Random();
   int? _batteryPercent;
   final _batteryController = StreamController<int?>.broadcast();
   
-  // Channel discovery callback
-  Function(bool meshwarFound)? onChannelDiscoveryComplete;
   
   // Track pending contact requests
   final Set<String> _pendingContactRequests = {};
@@ -75,7 +74,6 @@ class LoRaCompanionService {
   Map<String, Repeater> _repeaterContactCache = {}; // All known repeater contacts (from scan)
   Map<String, int> _nodeTypes = {}; // Map of node ID -> advType (1=companion, 2=repeater, 3=room)
   Completer<List<Repeater>>? _scanCompleter;
-  String? _pendingScanMessage; // Track scan broadcast messages
   Map<String, Repeater> _knownRepeaters = {}; // Map of repeater ID -> location from internet map
   
   // Track recent advertisements for echo correlation
@@ -86,10 +84,6 @@ class LoRaCompanionService {
   final Map<String, DateTime> _lastContactRequestAt = {}; // keyPrefix -> time
   Duration _contactRequestCooldown = const Duration(minutes: 5);
   
-  // Wardrive channel
-  // Default to index 1, user can change in settings
-  int _wardriveChannelIdx = 1;
-  bool _channelDiscoveryComplete = true; // Skip auto setup
   
   // Settings
   String? _ignoredRepeaterPrefix;
@@ -119,57 +113,6 @@ class LoRaCompanionService {
     return nodeType == ADV_TYPE_CHAT; // Type 1 = companion/chat device
   }
   
-  Uint8List? _hexToBytes(String hex) {
-    final cleaned = hex.trim().toLowerCase();
-    final re = RegExp(r'^[0-9a-f]{32}$');
-    if (!re.hasMatch(cleaned)) return null;
-    final out = Uint8List(16);
-    for (int i = 0; i < 16; i++) {
-      out[i] = int.parse(cleaned.substring(i * 2, i * 2 + 2), radix: 16);
-    }
-    return out;
-  }
-
-  /// Manually set the wardrive channel key (hex) and persist.
-  Future<bool> setManualWardriveChannelKey(String hex) async {
-    final key = _hexToBytes(hex);
-    if (key == null) return false;
-    _channelKeys[_wardriveChannelIdx] = key;
-    await _secureStorage.write(key: 'meshcore_manual_channel_key_${_wardriveChannelIdx}', value: hex);
-    _debugLog.logInfo('🔐 Manual wardrive channel key set for index ${_wardriveChannelIdx}');
-    return true;
-  }
-
-  /// Load manual wardrive channel key if previously saved.
-  Future<void> _loadManualWardriveChannelKey() async {
-    try {
-      final saved = await _secureStorage.read(key: 'meshcore_manual_channel_key_${_wardriveChannelIdx}');
-      if (saved != null) {
-        final key = _hexToBytes(saved);
-        if (key != null) {
-          _channelKeys[_wardriveChannelIdx] = key;
-          _debugLog.logInfo('🔐 Loaded manual wardrive channel key for index ${_wardriveChannelIdx}');
-        }
-      }
-    } catch (e) {
-      _debugLog.logError('Failed to load manual wardrive key: $e');
-    }
-  }
-
-  /// Set the channel index for wardrive pings
-  void setWardriveChannelIndex(int index) {
-    if (index < 0 || index > 7) {
-      throw ArgumentError('Channel index must be between 0 and 7');
-    }
-    _wardriveChannelIdx = index;
-    _debugLog.logInfo('Wardrive channel index set to: $index');
-    print('Wardrive channel index set to: $index');
-    
-    // Request channel key if connected
-    if (isDeviceConnected) {
-      _requestChannelInfo(index);
-    }
-  }
   
   /// Get device name for display (from BT device)
   String getDeviceName() {
@@ -304,15 +247,8 @@ class LoRaCompanionService {
         final handshake = _createCommandForDevice(CMD_APP_START);
         await _sendBinaryToDevice(handshake);
         _debugLog.logInfo('Sent handshake');
-        
-      // Discover or create #meshwar channel
-      await Future.delayed(const Duration(milliseconds: 200));
-      await _discoverOrCreateMeshwarChannel();
 
-      // Apply manual/default wardrive key if available
-      await _loadManualWardriveChannelKey();
-
-      // Immediately load full contact list so repeaters appear on the map
+      // Load full contact list so repeaters appear on the map
       await Future.delayed(const Duration(milliseconds: 150));
       await _requestAllContacts();
       
@@ -375,9 +311,6 @@ class LoRaCompanionService {
       await _sendBinaryToDevice(handshake);
       _debugLog.logInfo('Sent handshake');
 
-      // Apply manual/default wardrive key if available
-      await _loadManualWardriveChannelKey();
-      
       // Load full contact list so repeaters appear on the map
       await Future.delayed(const Duration(milliseconds: 150));
       await _requestAllContacts();
@@ -398,8 +331,8 @@ class LoRaCompanionService {
   // ============================================================================
 
   /// Scan for nearby repeaters by requesting all contacts
-  /// Caches contact info but doesn't add to map until they echo
-  Future<List<Repeater>> scanForRepeaters({int timeoutSeconds = 20}) async {
+  /// Loads repeater contacts from the device's contact list
+  Future<List<Repeater>> scanForRepeaters({int timeoutSeconds = 5}) async {
     if (!isDeviceConnected) {
       _debugLog.logError('Cannot scan - LoRa device not connected');
       return [];
@@ -410,23 +343,15 @@ class LoRaCompanionService {
       _repeaterContactCache.clear();
       _scanCompleter = Completer<List<Repeater>>();
 
-      // Send a broadcast ping message to discover repeaters
-      // Use a special marker so we can identify scan responses
-      final scanMessage = 'SCAN ${_generateId()}';
-      final payload = _protocol.createChannelMessagePayload(_wardriveChannelIdx, scanMessage);
-      final channelMsg = _createCommandForDevice(CMD_SEND_CHANNEL_MESSAGE, payload);
-      await _sendBinaryToDevice(channelMsg);
+      // Request all contacts from device
+      await _requestAllContacts();
       
-      _debugLog.logInfo('Sent scan broadcast on channel $_wardriveChannelIdx');
-      print('📡 Scanning for repeater contacts...');
-      
-      // Store the scan message so we can identify repeats
-      _pendingScanMessage = scanMessage;
+      _debugLog.logInfo('Requested contact list');
+      print('📡 Loading repeater contacts...');
 
-      // Wait for repeater responses
+      // Wait for contacts to be loaded
       Timer(Duration(seconds: timeoutSeconds), () {
         if (_scanCompleter != null && !_scanCompleter!.isCompleted) {
-          _pendingScanMessage = null;
           _debugLog.logInfo('✅ Scan complete: Cached ${_repeaterContactCache.length} contact(s)');
           print('✅ Cached ${_repeaterContactCache.length} repeater contact(s)');
           _scanCompleter!.complete(List.from(_repeaterContactCache.values));
@@ -595,119 +520,6 @@ class LoRaCompanionService {
     _debugLog.logInfo('Received device self info');
   }
   
-  // Channel encryption key storage
-  Map<int, Uint8List> _channelKeys = {};
-  Map<int, String> _channelNames = {}; // index -> name
-  Completer<void>? _channelDiscoveryCompleter;
-  int _channelsQueried = 0;
-  bool _meshwarFound = false;
-  
-  /// Discover existing #meshwar channel or create it
-  Future<void> _discoverOrCreateMeshwarChannel() async {
-    try {
-      print('🔍 Searching for #meshwar channel...');
-      _debugLog.logInfo('Discovering #meshwar channel');
-      
-      _channelDiscoveryCompleter = Completer<void>();
-      _channelsQueried = 0;
-      _meshwarFound = false;
-      
-      // Query channels 0-39 to find #meshwar (LoRa companion supports up to 40 channels)
-      for (int i = 0; i <= 39; i++) {
-        await _requestChannelInfo(i);
-        await Future.delayed(const Duration(milliseconds: 100));
-      }
-      
-      // Wait up to 6 seconds for responses (more channels to query)
-      await _channelDiscoveryCompleter!.future.timeout(
-        const Duration(seconds: 6),
-        onTimeout: () {
-          _debugLog.logInfo('Channel discovery timeout');
-        },
-      );
-      
-      if (!_meshwarFound) {
-        _debugLog.logError('#meshwar channel not found');
-        print('⚠️ #meshwar channel not found - user needs to join it in MeshCore app first');
-        
-        // Choose a target slot: first empty slot from 1..39, else 3 if empty, else skip
-        int? targetIdx;
-        for (int i = 1; i <= 39; i++) {
-          final n = _channelNames[i];
-          if (n == null || n.trim().isEmpty) { targetIdx = i; break; }
-        }
-        // Don't try to create channel - user must join #meshwar in MeshCore app first
-        print('⚠️ #meshwar channel not found on device');
-        print('⚠️ Please open MeshCore app and join the #meshwar channel before using this app');
-        
-        // Notify UI that #meshwar was not found
-        if (onChannelDiscoveryComplete != null) {
-          onChannelDiscoveryComplete!(false);
-        }
-      }
-      
-      _channelDiscoveryCompleter = null;
-    } catch (e) {
-      _debugLog.logError('Channel discovery error: $e');
-    }
-  }
-  
-  
-  /// Request channel info to get encryption key
-  Future<void> _requestChannelInfo(int channelIdx) async {
-    try {
-      print('📡 Requesting channel $channelIdx info for encryption key');
-      _debugLog.logInfo('Requesting channel $channelIdx info');
-      
-      final payload = _protocol.createGetChannelPayload(channelIdx);
-      final cmd = _createCommandForDevice(CMD_GET_CHANNEL, payload);
-      await _sendBinaryToDevice(cmd);
-    } catch (e) {
-      _debugLog.logError('Failed to request channel info: $e');
-    }
-  }
-  
-  /// Handle RESP_CODE_CHANNEL_INFO - channel information with encryption key
-  void _handleChannelInfo(Uint8List data) {
-    final channelInfo = _protocol.parseChannelInfoFrame(data);
-    if (channelInfo == null) {
-      _debugLog.logError('Failed to parse channel info');
-      return;
-    }
-    
-    final index = channelInfo['index'] as int;
-    final name = channelInfo['name'] as String;
-    final key = channelInfo['key'] as Uint8List;
-    
-    // Store the channel name and key for decryption
-    _channelNames[index] = name;
-    _channelKeys[index] = key;
-    
-    _debugLog.logInfo('🔑 Channel $index "$name" key stored');
-    print('🔑 Got encryption key for channel $index: $name');
-    
-    // Check if this is #meshwar during discovery
-    if (_channelDiscoveryCompleter != null && !_channelDiscoveryCompleter!.isCompleted) {
-      _channelsQueried++;
-      
-      if (name.toLowerCase().contains('meshwar')) {
-        _meshwarFound = true;
-        _wardriveChannelIdx = index;
-        print('✅ Found #meshwar on channel $index!');
-        _debugLog.logInfo('Found #meshwar on channel $index');
-        
-        // Notify UI that #meshwar was found
-        if (onChannelDiscoveryComplete != null) {
-          onChannelDiscoveryComplete!(true);
-        }
-        
-        _channelDiscoveryCompleter!.complete();
-      } else if (_channelsQueried >= 40) {
-        // All channels queried, none found
-        _channelDiscoveryCompleter!.complete();
-      }
-    }
-  }
 
 
   // ============================================================================
@@ -726,8 +538,12 @@ class LoRaCompanionService {
     }
   }
 
-  /// Send ping via wardrive channel message
-  /// Repeaters will hear and echo the message back
+  DateTime? _lastPingTime;
+  static const Duration _minPingInterval = Duration(seconds: 30);
+  
+  /// Send Discovery ping to find nearby repeaters
+  /// Uses MeshCore Discovery protocol (DISCOVER_REQ/DISCOVER_RESP)
+  /// Note: Repeaters rate-limit responses to 4 per 2 minutes
   Future<PingResult> ping({
     double? latitude,
     double? longitude,
@@ -748,58 +564,122 @@ class LoRaCompanionService {
         error: 'No GPS location',
       );
     }
+    
+    // Check rate limiting - don't ping too frequently
+    if (_lastPingTime != null) {
+      final timeSinceLastPing = DateTime.now().difference(_lastPingTime!);
+      if (timeSinceLastPing < _minPingInterval) {
+        final waitSeconds = (_minPingInterval - timeSinceLastPing).inSeconds;
+        _debugLog.logInfo('⏳ Rate limit: wait ${waitSeconds}s before next ping');
+        print('⏳ Waiting ${waitSeconds}s to avoid rate limits...');
+        // Still allow the ping but warn the user
+      }
+    }
 
     try {
-      // First, update device position so repeaters know where message came from
+      // Update device position for proper mesh routing
       await _updateDevicePosition(latitude, longitude);
       
-      // Send zero-hop advertisement to get immediate ACKs from nearby repeaters
+      // Send zero-hop advertisement to get immediate contact updates
       final zeroHopPayload = Uint8List.fromList([0]);  // 0 = zero-hop
       final zeroHopCmd = _createCommandForDevice(CMD_SEND_ADVERT, zeroHopPayload);
-      _debugLog.logInfo('📡 Sending zero-hop advertisement (CMD_SEND_ADVERT with flag=0)');
+      _debugLog.logInfo('📡 Sending zero-hop advertisement');
       await _sendBinaryToDevice(zeroHopCmd);
       
-      // Small delay to let ACKs arrive
+      // Small delay to let adverts propagate
       await Future.delayed(const Duration(milliseconds: 100));
       
-      // Format message: "<lat> <lon> [<ignored_id>]"
-      String message = '${latitude.toStringAsFixed(4)} ${longitude.toStringAsFixed(4)}';
-      if (_ignoredRepeaterPrefix != null) {
-        message += ' $_ignoredRepeaterPrefix';
-      }
+      // Generate random tag for this discovery request
+      final tag = _random.nextInt(0xFFFFFFFF);
       
-      // Send channel message to configured channel index
-      final payload = _protocol.createChannelMessagePayload(_wardriveChannelIdx, message);
-      _debugLog.logInfo('📤 Creating ping payload: ${payload.length} bytes, channel=$_wardriveChannelIdx');
+      // Create Discovery request payload (prefixOnly=false to get full 32-byte keys for contact lookup)
+      final discoveryPayload = _protocol.createDiscoveryRequestPayload(tag, prefixOnly: false);
+      _debugLog.logInfo('Discovery payload: ${discoveryPayload.map((b) => b.toRadixString(16).padLeft(2, "0")).join(" ")}');
       
-      final channelMsg = _createCommandForDevice(CMD_SEND_CHANNEL_MESSAGE, payload);
-      _debugLog.logInfo('📤 Sending CMD_SEND_CHANNEL_MESSAGE (0x03) frame: ${channelMsg.length} bytes');
+      final controlCmd = _createCommandForDevice(CMD_SEND_CONTROL_DATA, discoveryPayload);
+      _debugLog.logInfo('Full command frame: ${controlCmd.take(30).map((b) => b.toRadixString(16).padLeft(2, "0")).join(" ")}...');
       
-      await _sendBinaryToDevice(channelMsg);
+      _debugLog.logInfo('📡 Sending DISCOVER_REQ with tag=0x${tag.toRadixString(16).padLeft(8, "0")}');
+      await _sendBinaryToDevice(controlCmd);
       
-      _debugLog.logPing('📍 Ping sent to channel $_wardriveChannelIdx: $message');
-      _debugLog.logInfo('⏳ Waiting for repeat (timeout: ${timeoutSeconds}s)...');
-      print('📍 Ping sent: $message, waiting for repeat...');
+      _lastPingTime = DateTime.now();
+      _debugLog.logPing('📍 Discovery ping sent at ($latitude, $longitude)');
+      _debugLog.logInfo('Note: Repeaters rate-limit to 4 responses per 2 minutes');
+      print('📍 Discovery ping sent, tag=0x${tag.toRadixString(16)}, waiting for responses...');
 
-      // Wait for repeat (echo) from repeater
+      // Setup response tracking
       final completer = Completer<PingResult>();
-      _pendingPings[message] = completer;
-      _pingEchoes[message] = []; // Track all repeaters that echo this ping
+      _pendingPings[tag] = completer;
+      _pingResponses[tag] = [];
 
+      // Early completion timer: complete after 3 seconds if we have responses
+      Timer(const Duration(seconds: 3), () {
+        if (!completer.isCompleted) {
+          final responses = _pingResponses[tag] ?? [];
+          if (responses.isNotEmpty) {
+            // We have at least one response, complete early
+            _pendingPings.remove(tag);
+            _pingResponses.remove(tag);
+            
+            responses.sort((a, b) => (b['snr'] as int).compareTo(a['snr'] as int));
+            final best = responses.first;
+            
+            print('✅ Ping complete (early): ${responses.length} repeater(s) responded');
+            _debugLog.logPing('✅ Best response: ${best["nodeId"]} (SNR=${best["snr"]}, RSSI=${best["rssi"]})');
+            
+            final result = PingResult(
+              timestamp: DateTime.now(),
+              status: PingStatus.success,
+              rssi: best['rssi'] as int,
+              snr: best['snr'] as int,
+              nodeId: best['nodeId'] as String,
+              latitude: latitude,
+              longitude: longitude,
+            );
+            completer.complete(result);
+            _pingResultController.add(result);
+          }
+        }
+      });
+
+      // Final timeout handler: wait full timeout if no responses yet
       Timer(Duration(seconds: timeoutSeconds), () {
         if (!completer.isCompleted) {
-          _pendingPings.remove(message);
-          final echoes = _pingEchoes.remove(message) ?? [];
-          print('⏰ Ping timeout. Received ${echoes.length} echoes from: ${echoes.join(", ")}');
-          final result = PingResult(
-            timestamp: DateTime.now(),
-            status: PingStatus.timeout,
-            latitude: latitude,
-            longitude: longitude,
-            error: 'No repeat heard - dead zone',
-          );
-          completer.complete(result);
-          _pingResultController.add(result);
+          _pendingPings.remove(tag);
+          final responses = _pingResponses.remove(tag) ?? [];
+          
+          if (responses.isEmpty) {
+            // No repeaters responded - dead zone
+            print('⏰ Ping timeout. No repeaters responded.');
+            final result = PingResult(
+              timestamp: DateTime.now(),
+              status: PingStatus.timeout,
+              latitude: latitude,
+              longitude: longitude,
+              error: 'No repeaters in range - dead zone',
+            );
+            completer.complete(result);
+            _pingResultController.add(result);
+          } else {
+            // Got responses after early timer - use the best one (highest SNR)
+            responses.sort((a, b) => (b['snr'] as int).compareTo(a['snr'] as int));
+            final best = responses.first;
+            
+            print('✅ Ping complete: ${responses.length} repeater(s) responded');
+            _debugLog.logPing('✅ Best response: ${best["nodeId"]} (SNR=${best["snr"]}, RSSI=${best["rssi"]})');
+            
+            final result = PingResult(
+              timestamp: DateTime.now(),
+              status: PingStatus.success,
+              rssi: best['rssi'] as int,
+              snr: best['snr'] as int,
+              nodeId: best['nodeId'] as String,
+              latitude: latitude,
+              longitude: longitude,
+            );
+            completer.complete(result);
+            _pingResultController.add(result);
+          }
         }
       });
 
@@ -874,23 +754,16 @@ class LoRaCompanionService {
       case RESP_CODE_BATT_AND_STORAGE:
         _handleBatteryResponse(frame.data);
         break;
-      case RESP_CODE_CHANNEL_INFO:
-        _handleChannelInfo(frame.data);
-        break;
-      case PUSH_CODE_CHANNEL_MSG_RECV:
-      case RESP_CODE_CHANNEL_MSG_RECV:
-      case RESP_CODE_CHANNEL_MSG_RECV_V3:
-        _handleChannelMessage(frame.data);
-        break;
-      case PUSH_CODE_CHANNEL_ECHO:
-        _debugLog.logLoRa('🔁 Channel echo received (0x88), payload len=${frame.data.length}');
-        print('🔁 ECHO frame: ${frame.data.take(40).map((b) => b.toRadixString(16).padLeft(2, "0")).join(" ")}');
-        _handleChannelEcho(frame.data);  // Echo format has extra header
-        break;
       case PUSH_CODE_ACK_RECV:
         _debugLog.logLoRa('✅ ACK received (0x84), payload len=${frame.data.length}');
         print('✅ ACK frame: ${frame.data.take(40).map((b) => b.toRadixString(16).padLeft(2, "0")).join(" ")}');
         _handleAckReceived(frame.data);
+        break;
+      case PUSH_CODE_CONTROL_DATA:
+        _debugLog.logLoRa('🔍 Control data received (0x8E), payload len=${frame.data.length}');
+        _debugLog.logLoRa('Control data hex: ${frame.data.take(50).map((b) => b.toRadixString(16).padLeft(2, "0")).join(" ")}${frame.data.length > 50 ? "..." : ""}');
+        print('🔍 Control data: ${frame.data.take(50).map((b) => b.toRadixString(16).padLeft(2, "0")).join(" ")}');
+        _handleControlDataPush(frame.data);
         break;
       default:
         // Log other frame types for debugging
@@ -959,6 +832,75 @@ class LoRaCompanionService {
     await _sendBinaryToDevice(cmd);
   }
 
+  /// Handle PUSH_CODE_CONTROL_DATA - control data packet (e.g., Discovery responses)
+  Future<void> _handleControlDataPush(Uint8List data) async {
+    try {
+      // Parse the control data frame (extracts SNR, RSSI, path, payload)
+      final controlData = _protocol.parseControlDataPush(data);
+      if (controlData == null) {
+        _debugLog.logError('⚠️ Failed to parse control data push');
+        return;
+      }
+      
+      final snr = controlData['snr'] as int;
+      final rssi = controlData['rssi'] as int;
+      final payload = controlData['payload'] as Uint8List;
+      
+      // Parse the payload as a Discovery response
+      final discovery = _protocol.parseDiscoveryResponse(payload);
+      if (discovery == null) {
+        _debugLog.logLoRa('Control data is not a Discovery response');
+        return;
+      }
+      
+      final tag = discovery['tag'] as int;
+      final nodeType = discovery['node_type'] as int;
+      final pubkey = discovery['pubkey'] as String;
+      final pubkeyShort = pubkey.substring(0, 8).toUpperCase();
+      final discoverySNR = discovery['snr'] as int; // SNR from discovery payload
+      
+      _debugLog.logInfo('🔍 DISCOVER_RESP: tag=0x${tag.toRadixString(16)}, node=$pubkeyShort, type=$nodeType, SNR=$snr, RSSI=$rssi');
+      print('🔍 Discovery response from $pubkeyShort (SNR=$snr, RSSI=$rssi)');
+      
+      // Check if this repeater should be ignored (mobile companion)
+      final shouldIgnore = _ignoredRepeaterPrefix != null && 
+          pubkeyShort.toUpperCase().startsWith(_ignoredRepeaterPrefix!.toUpperCase());
+      
+      if (shouldIgnore) {
+        _debugLog.logInfo('⛔ Ignoring discovery response from mobile repeater: $pubkeyShort');
+        return;
+      }
+      
+      // Request contact info to get repeater position (if we don't already have it)
+      if (!_knownRepeaters.containsKey(pubkey) && discovery['pubkey_bytes'] != null) {
+        final pubkeyBytes = discovery['pubkey_bytes'] as Uint8List;
+        _debugLog.logInfo('📞 Requesting position for $pubkeyShort');
+        await _requestContactDetails(pubkeyBytes);
+      }
+      
+      // Check if this response matches a pending ping
+      final completer = _pendingPings[tag];
+      if (completer != null && !completer.isCompleted) {
+        // Add this response to the list
+        _pingResponses[tag]?.add({
+          'nodeId': pubkeyShort,
+          'snr': snr,
+          'rssi': rssi,
+          'node_type': nodeType,
+        });
+        
+        _debugLog.logPing('📡 Repeater $pubkeyShort responded (SNR=$snr, RSSI=$rssi)');
+        
+        // Note: We don't complete immediately - we wait for timeout to collect all responses
+        // and then pick the best one (highest SNR)
+      } else {
+        _debugLog.logLoRa('⚠️ Discovery response for unknown/completed tag: 0x${tag.toRadixString(16)}');
+      }
+    } catch (e) {
+      _debugLog.logError('Error handling control data push: $e');
+    }
+  }
+
   /// Handle RESP_CODE_CONTACT - contact details response
   void _handleContactResponse(Uint8List data) {
     final contact = _protocol.parseContactFrame(data);
@@ -997,7 +939,7 @@ class LoRaCompanionService {
     );
     
     // If scanning, cache only; otherwise show immediately on map
-    if (_pendingScanMessage != null && _scanCompleter != null && !_scanCompleter!.isCompleted) {
+    if (_scanCompleter != null && !_scanCompleter!.isCompleted) {
       _repeaterContactCache[repeater.id] = repeater;
       _knownRepeaters[repeater.id] = repeater; // mark as known
       _debugLog.logInfo('📋 Cached: ${repeater.name ?? repeater.id}');
@@ -1033,33 +975,20 @@ class LoRaCompanionService {
     }
   }
 
-  /// Handle PUSH_CODE_CHANNEL_ECHO (0x88) - actually raw radio log frame
-  void _handleChannelEcho(Uint8List data) {
-    // 0x88 is PUSH_CODE_LOG_RX_DATA - raw log with SNR/RSSI at bytes 0-1
-    final msgData = _protocol.parseRawLogFrame(data);
-    if (msgData == null) {
-      _debugLog.logError('Failed to parse raw log frame (${data.length} bytes)');
-      print('❌ Failed to parse 0x88 frame - raw hex: ${data.map((b) => b.toRadixString(16).padLeft(2, "0")).join(" ")}');
-      return;
-    }
-    _processChannelMessage(msgData);
-  }
-  
-  /// Handle PUSH_CODE_ACK_RECV (0x84) - ACK from zero-hop advertisement
-  /// Format: [SNR x2][RSSI x2][public_key x32][...]
-  void _handleAckReceived(Uint8List data) {
+  /// Handle PUSH_CODE_ACK_RECV (0x84) - ACK from zero-hop advertisement  
+  /// ACKs indicate a repeater is in direct range and provide SNR/RSSI for coverage mapping
+  Future<void> _handleAckReceived(Uint8List data) async {
     try {
       if (data.length < 36) {
-        _debugLog.logError('ACK frame too short: ${data.length} bytes');
         return;
       }
       
       // Parse SNR and RSSI (first 4 bytes)
       int snr = data[0] | (data[1] << 8);
-      if (snr > 32767) snr -= 65536; // Convert to signed
+      if (snr > 32767) snr -= 65536;
       
       int rssi = data[2] | (data[3] << 8);
-      if (rssi > 32767) rssi -= 65536; // Convert to signed
+      if (rssi > 32767) rssi -= 65536;
       
       // Parse public key (next 32 bytes)
       final publicKey = Uint8List.fromList(data.sublist(4, 36));
@@ -1067,171 +996,42 @@ class LoRaCompanionService {
       final keyPrefix = keyHex.substring(0, 8).toUpperCase();
       
       _debugLog.logInfo('✅ ACK from $keyPrefix (SNR: $snr, RSSI: $rssi)');
-      print('✅ ACK from $keyPrefix (SNR: $snr, RSSI: $rssi)');
+      print('✅ ACK from repeater $keyPrefix (SNR=$snr, RSSI=$rssi)');
       
-      // If we have pending pings, complete the first one
+      // Check if this repeater should be ignored (mobile companion)
+      final shouldIgnore = _ignoredRepeaterPrefix != null && 
+          keyPrefix.toUpperCase().startsWith(_ignoredRepeaterPrefix!.toUpperCase());
+      
+      if (shouldIgnore) {
+        _debugLog.logInfo('⛔ Ignoring ACK from mobile repeater: $keyPrefix');
+        return;
+      }
+      
+      // Request contact info to get repeater position (if we don't already have it)
+      if (!_knownRepeaters.containsKey(keyPrefix)) {
+        _debugLog.logInfo('📞 Requesting position for $keyPrefix');
+        await _requestContactDetails(publicKey);
+      } else {
+        // Update signal strength for known repeater
+        _updateRepeaterSignal(keyPrefix, snr: snr, rssi: rssi);
+      }
+      
+      // If there's a pending ping waiting for responses, add this ACK as a response
+      // Look for the most recent pending ping (should be the active one)
       if (_pendingPings.isNotEmpty) {
-        final pingMsg = _pendingPings.keys.first;
-        
-        // Track this ACK
-        if (_pingEchoes.containsKey(pingMsg)) {
-          _pingEchoes[pingMsg]!.add(keyPrefix);
-          print('📊 Ping now has ${_pingEchoes[pingMsg]!.length} ACKs: ${_pingEchoes[pingMsg]!.join(", ")}');
+        final activePing = _pendingPings.entries.last;
+        if (!activePing.value.isCompleted) {
+          _pingResponses[activePing.key]?.add({
+            'nodeId': keyPrefix,
+            'snr': snr,
+            'rssi': rssi,
+            'node_type': ADV_TYPE_REPEATER,
+          });
+          _debugLog.logPing('📡 Added ACK from $keyPrefix to ping responses');
         }
-        
-        // Check if this is from ignored repeater
-        if (_ignoredRepeaterPrefix != null && 
-            keyPrefix.toUpperCase().startsWith(_ignoredRepeaterPrefix!.toUpperCase())) {
-          _debugLog.logInfo('Ignoring ACK from mobile repeater: $keyPrefix');
-          return;
-        }
-        
-        // Complete ping on FIRST valid (non-ignored) ACK
-        final completer = _pendingPings.remove(pingMsg);
-        final allAcks = _pingEchoes.remove(pingMsg) ?? [];
-        
-        if (completer == null || completer.isCompleted) {
-          return;
-        }
-        
-        _debugLog.logPing('🔁 Zero-hop ACK from $keyPrefix! SNR: $snr RSSI: $rssi (Total ACKs: ${allAcks.length})');
-        
-        final result = PingResult(
-          timestamp: DateTime.now(),
-          status: PingStatus.success,
-          rssi: rssi,
-          snr: snr,
-          nodeId: keyPrefix,
-        );
-        
-        completer.complete(result);
-        _pingResultController.add(result);
       }
     } catch (e) {
       _debugLog.logError('Error parsing ACK frame: $e');
-      print('❌ Error parsing ACK: $e');
-    }
-  }
-
-  /// Handle PUSH_CODE_CHANNEL_MSG_RECV - incoming channel message (repeat)
-  void _handleChannelMessage(Uint8List data) {
-    final msgData = _protocol.parseChannelMessageFrame(data);
-    if (msgData == null) {
-      _debugLog.logError('Failed to parse channel message');
-      return;
-    }
-    _processChannelMessage(msgData);
-  }
-  
-  /// Process parsed channel message/echo data
-  Future<void> _processChannelMessage(Map<String, dynamic> msgData) async {
-    
-    final text = msgData['text'] as String?;
-    final pathRepeater = msgData['repeater'] as String?;  // First hop from path
-    final sender = msgData['sender'] as String?;  // Packet sender (could be the repeater that echoed)
-    final snr = msgData['snr'] as int?;
-    final rssi = msgData['rssi'] as int?;
-    
-    // Try to determine which repeater sent this echo
-    // 1. If there's a path, use the first hop (routed packets)
-    // 2. If sender field is present, use that
-    // NOTE: For flood/echo packets, we CANNOT determine which repeater sent it
-    // because the source is not included in the encrypted packet structure.
-    // The firmware tracks this internally but doesn't expose it to the companion app.
-    String? repeater = pathRepeater ?? sender;
-    
-    _debugLog.logLoRa('📡 Channel message from $sender: "$text" via $repeater');
-    print('📡 Channel message received: "$text", sender=$sender, repeater=$repeater, snr=$snr, rssi=$rssi');
-
-    // Update repeater signal metrics in UI caches
-    if (repeater != null && (snr != null || rssi != null)) {
-      _updateRepeaterSignal(repeater, snr: snr, rssi: rssi);
-    }
-    
-    // Check if this is a scan broadcast response
-    // During scan, we accept ANY echo and request contact details to cache
-    if (_pendingScanMessage != null && _scanCompleter != null && !_scanCompleter!.isCompleted) {
-      // Use repeater ID (sender is the repeater that echoed)
-      final nodeId = repeater;
-      
-      // Ignore companion nodes (not repeaters)
-      if (nodeId != null && _isCompanionNode(nodeId)) {
-        _debugLog.logInfo('📱 Ignoring companion node: $nodeId');
-        return;
-      }
-      
-      if (nodeId != null && !_repeaterContactCache.containsKey(nodeId)) {
-        _debugLog.logInfo('📡 Echo from: $nodeId (SNR: $snr, RSSI: $rssi)');
-        print('📡 Echo from: $nodeId (SNR: $snr, RSSI: $rssi)');
-        
-        // Request contact details to cache
-        final senderKey = msgData['repeaterKey'] as Uint8List? ?? msgData['senderKey'] as Uint8List?;
-        if (senderKey != null) {
-          await _requestContactDetails(senderKey);
-        } else {
-          print('⚠️ No sender key available for $nodeId');
-        }
-      }
-      return; // Don't process as normal ping
-    }
-    
-    // Check if this is a repeat of one of our pings
-    // Accept ANY echo when we have pending pings (messages are encrypted)
-    // The repeater variable now contains the sender (repeater that echoed)
-    final echoSource = repeater ?? 'DIRECT';
-    
-    if (_pendingPings.isNotEmpty) {
-      print('Echo received from $echoSource (repeater=$repeater, sender=${msgData['sender']}, adverts=${_recentAdvertisements.keys.join(",")}) with pending pings: ${_pendingPings.keys.toList()}');
-      
-      // Ignore companion nodes (not repeaters)
-      if (_isCompanionNode(echoSource)) {
-        _debugLog.logInfo('📱 Ignoring companion node echo: $echoSource');
-        return;
-      }
-      
-      // Get the oldest pending ping
-      final pingMsg = _pendingPings.keys.first;
-      
-      // Track this echo
-      if (_pingEchoes.containsKey(pingMsg)) {
-        _pingEchoes[pingMsg]!.add(echoSource);
-        print('📊 Ping now has ${_pingEchoes[pingMsg]!.length} echoes: ${_pingEchoes[pingMsg]!.join(", ")}');
-      }
-      
-      // Check if this is from ignored repeater
-      if (_ignoredRepeaterPrefix != null && 
-          echoSource.toUpperCase().startsWith(_ignoredRepeaterPrefix!.toUpperCase())) {
-        _debugLog.logInfo('Ignoring repeat from mobile repeater: $echoSource');
-        // Don't complete yet - wait for other repeaters
-        return;
-      }
-      
-      // Complete ping on FIRST valid (non-ignored) echo
-      final completer = _pendingPings.remove(pingMsg);
-      final allEchoes = _pingEchoes.remove(pingMsg) ?? [];
-      
-      if (completer == null || completer.isCompleted) {
-        print('⚠️ Completer was null or already completed');
-        return;
-      }
-      
-      // Repeater ID extracted from the packet path (last hop in the path)
-      // This is a 2-character hex prefix of the repeater's public key
-      final repeaterId = repeater;
-      
-      _debugLog.logPing('🔁 Echo from ${repeaterId ?? "unknown"}! SNR: $snr RSSI: $rssi (Total echoes: ${allEchoes.length})');
-      print('🔁 Echo from repeater: $repeaterId, SNR: $snr, RSSI: $rssi');
-      
-      final result = PingResult(
-        timestamp: DateTime.now(),
-        status: PingStatus.success,
-        rssi: rssi,
-        snr: snr,
-        nodeId: repeaterId,  // 2-char hex prefix from path's last hop
-      );
-      
-      completer.complete(result);
-      _pingResultController.add(result);
     }
   }
 
