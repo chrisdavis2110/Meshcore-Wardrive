@@ -9,7 +9,8 @@ A mobile wardriving application for mapping MeshCore mesh network coverage in re
 3. **Install the APK** on your device
 4. **Connect your LoRa device** via USB or Bluetooth
 5. **Start wardriving!**
-
+6. **Check in the app for Updates**
+7. 
 ## ✨ Features
 
 ### Mobile App
